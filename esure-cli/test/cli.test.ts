@@ -268,3 +268,310 @@ describe("CLI commands", () => {
     expect(stdout.join("\n")).toContain("esure v0.1.0");
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #66 — bounded step progress during human-mode runs
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("#66 human-mode step progress", () => {
+  beforeEach(() => {
+    stdout = [];
+    stderr = [];
+    originalArgv = process.argv;
+    originalExitCode = process.exitCode;
+    process.exitCode = undefined;
+    vi.spyOn(console, "log").mockImplementation((...values: unknown[]) => {
+      stdout.push(values.join(" "));
+    });
+    vi.spyOn(console, "error").mockImplementation((...values: unknown[]) => {
+      stderr.push(values.join(" "));
+    });
+    mocks.list.mockReturnValue(catalog);
+    mocks.find.mockImplementation((id: string) => id === scenario.id ? structuredClone(scenario) : undefined);
+    mocks.createRegistry.mockReturnValue({ list: mocks.list, find: mocks.find });
+    mocks.execute.mockReset();
+    mocks.readFile.mockReset();
+    mocks.list.mockClear();
+    mocks.find.mockClear();
+  });
+
+  afterEach(() => {
+    process.argv = originalArgv;
+    process.exitCode = originalExitCode;
+    vi.restoreAllMocks();
+  });
+
+  it("prints each step and assertion once in human mode", async () => {
+    mocks.execute.mockImplementation((_scenario: ValidatedScenario, opts: { onStep?: (s: unknown) => void; onAssertion?: (a: unknown) => void }) => {
+      opts?.onStep?.({ id: "pay", type: "payment", status: "passed", message: "Payment done." });
+      opts?.onAssertion?.({ type: "accountExists", status: "passed", expected: true, actual: true, message: "Exists." });
+      return Promise.resolve(passedExecution);
+    });
+    expect(await invokeCli("run", scenario.id)).toBe(0);
+    const out = stdout.join("\n");
+    expect(out).toContain("pay: Payment done.");
+    expect(out).toContain("accountExists: Exists.");
+    expect(out).toContain("Result: PASSED");
+  });
+
+  it("does not print per-step progress in JSON mode", async () => {
+    mocks.execute.mockImplementation((_scenario: ValidatedScenario, opts: { onStep?: (s: unknown) => void; onAssertion?: (a: unknown) => void }) => {
+      opts?.onStep?.({ id: "pay", type: "payment", status: "passed", message: "Payment done." });
+      return Promise.resolve(passedExecution);
+    });
+    expect(await invokeCli("run", scenario.id, "--output", "json")).toBe(0);
+    const out = stdout.join("\n");
+    // JSON output should not have progress lines, only the JSON report
+    const parsed = JSON.parse(out);
+    expect(parsed.status).toBe("passed");
+    // progress text should not appear outside JSON
+    expect(out).not.toContain("pay: Payment done.");
+  });
+
+  it("preserves error after partial progress in human mode", async () => {
+    mocks.execute.mockImplementation((_scenario: ValidatedScenario, opts: { onStep?: (s: unknown) => void }) => {
+      opts?.onStep?.({ id: "step-1", type: "payment", status: "passed", message: "Step done." });
+      return Promise.reject(Object.assign(new Error("network timeout"), { report: { id: "run-abc" } }));
+    });
+    expect(await invokeCli("run", scenario.id)).toBe(1);
+    const out = stdout.join("\n");
+    const errOut = stderr.join("\n");
+    expect(out).toContain("step-1: Step done.");
+    expect(errOut).toContain("Run failed: network timeout");
+  });
+
+  it("does not duplicate the final step list in human mode", async () => {
+    mocks.execute.mockImplementation((_scenario: ValidatedScenario, opts: { onStep?: (s: unknown) => void; onAssertion?: (a: unknown) => void }) => {
+      opts?.onStep?.({ id: "step-1", type: "payment", status: "passed", message: "Payment confirmed." });
+      opts?.onAssertion?.({ type: "accountExists", status: "passed", expected: true, actual: true, message: "Account exists." });
+      return Promise.resolve(passedExecution);
+    });
+    expect(await invokeCli("run", scenario.id)).toBe(0);
+    const out = stdout.join("\n");
+    // Message should appear exactly once (from callback), not duplicated by final report
+    const occurrences = (out.match(/Payment confirmed\./g) ?? []).length;
+    expect(occurrences).toBe(1);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #67 — run-suite command
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("#67 run-suite command", () => {
+  beforeEach(() => {
+    stdout = [];
+    stderr = [];
+    originalArgv = process.argv;
+    originalExitCode = process.exitCode;
+    process.exitCode = undefined;
+    vi.spyOn(console, "log").mockImplementation((...values: unknown[]) => {
+      stdout.push(values.join(" "));
+    });
+    vi.spyOn(console, "error").mockImplementation((...values: unknown[]) => {
+      stderr.push(values.join(" "));
+    });
+    mocks.list.mockReturnValue(catalog);
+    mocks.find.mockImplementation((id: string) => id === scenario.id ? structuredClone(scenario) : undefined);
+    mocks.createRegistry.mockReturnValue({ list: mocks.list, find: mocks.find });
+    mocks.execute.mockClear();
+    mocks.execute.mockResolvedValue(passedExecution);
+    mocks.readFile.mockReset();
+  });
+
+  afterEach(() => {
+    process.argv = originalArgv;
+    process.exitCode = originalExitCode;
+    vi.restoreAllMocks();
+  });
+
+  it("rejects missing IDs with a usage error", async () => {
+    expect(await invokeCli("run-suite")).toBe(1);
+    expect(stderr.join("\n")).toContain("Missing scenario IDs");
+  });
+
+  it("rejects unknown scenario IDs before any execution", async () => {
+    expect(await invokeCli("run-suite", "missing-scenario", "--output", "json")).toBe(1);
+    expect(mocks.execute).not.toHaveBeenCalled();
+    expect(JSON.parse(stderr.join("\n")).error.message).toContain("missing-scenario");
+  });
+
+  it("rejects duplicate IDs before any execution", async () => {
+    expect(await invokeCli("run-suite", scenario.id, scenario.id, "--output", "json")).toBe(1);
+    expect(mocks.execute).not.toHaveBeenCalled();
+    expect(JSON.parse(stderr.join("\n")).error.message).toContain("Duplicate");
+  });
+
+  it("runs a single known scenario and returns passed JSON", async () => {
+    expect(await invokeCli("run-suite", scenario.id, "--output", "json")).toBe(0);
+    const result = JSON.parse(stdout.join("\n"));
+    expect(result.status).toBe("passed");
+    expect(result.total).toBe(1);
+    expect(result.passed).toBe(1);
+    expect(result.scenarios[0].scenarioId).toBe(scenario.id);
+  });
+
+  it("returns failed status when a scenario fails, continues by default", async () => {
+    const scenario2: ValidatedScenario = { ...scenario, id: "test-scenario-2" };
+    mocks.find.mockImplementation((id: string) => {
+      if (id === scenario.id) return structuredClone(scenario);
+      if (id === "test-scenario-2") return structuredClone(scenario2);
+      return undefined;
+    });
+    mocks.execute
+      .mockResolvedValueOnce({
+        steps: [{ id: "s1", type: "payment", status: "failed", message: "fail" }],
+        assertions: [],
+      })
+      .mockResolvedValueOnce(passedExecution);
+    expect(await invokeCli("run-suite", scenario.id, "test-scenario-2", "--output", "json")).toBe(1);
+    const result = JSON.parse(stdout.join("\n"));
+    expect(result.status).toBe("failed");
+    expect(result.total).toBe(2);
+    expect(result.passed).toBe(1);
+    expect(result.failed).toBe(1);
+    // Both scenarios ran (no fail-fast)
+    expect(mocks.execute).toHaveBeenCalledTimes(2);
+  });
+
+  it("stops after first failure with --fail-fast", async () => {
+    const scenario2: ValidatedScenario = { ...scenario, id: "test-scenario-2" };
+    mocks.find.mockImplementation((id: string) => {
+      if (id === scenario.id) return structuredClone(scenario);
+      if (id === "test-scenario-2") return structuredClone(scenario2);
+      return undefined;
+    });
+    mocks.execute.mockResolvedValueOnce({
+      steps: [{ id: "s1", type: "payment", status: "failed", message: "fail" }],
+      assertions: [],
+    });
+    expect(
+      await invokeCli("run-suite", scenario.id, "test-scenario-2", "--fail-fast", "--output", "json"),
+    ).toBe(1);
+    const result = JSON.parse(stdout.join("\n"));
+    expect(result.status).toBe("failed");
+    expect(result.total).toBe(1); // only 1 ran
+    expect(mocks.execute).toHaveBeenCalledTimes(1);
+  });
+
+  it("records error status for execution errors without aborting (continue mode)", async () => {
+    const scenario2: ValidatedScenario = { ...scenario, id: "test-scenario-2" };
+    mocks.find.mockImplementation((id: string) => {
+      if (id === scenario.id) return structuredClone(scenario);
+      if (id === "test-scenario-2") return structuredClone(scenario2);
+      return undefined;
+    });
+    mocks.execute
+      .mockRejectedValueOnce(new Error("gateway error"))
+      .mockResolvedValueOnce(passedExecution);
+    expect(await invokeCli("run-suite", scenario.id, "test-scenario-2", "--output", "json")).toBe(1);
+    const result = JSON.parse(stdout.join("\n"));
+    expect(result.scenarios[0].status).toBe("error");
+    expect(result.scenarios[0].error.message).toBe("gateway error");
+    expect(result.scenarios[1].status).toBe("passed");
+    expect(mocks.execute).toHaveBeenCalledTimes(2);
+  });
+
+  it("prints human-readable suite summary", async () => {
+    expect(await invokeCli("run-suite", scenario.id)).toBe(0);
+    const out = stdout.join("\n");
+    expect(out).toContain("Run suite:");
+    expect(out).toContain(scenario.id);
+    expect(out).toContain("Suite result: PASSED");
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #68 — ASCII status markers
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("#68 ASCII status markers", () => {
+  beforeEach(() => {
+    stdout = [];
+    stderr = [];
+    originalArgv = process.argv;
+    originalExitCode = process.exitCode;
+    process.exitCode = undefined;
+    vi.spyOn(console, "log").mockImplementation((...values: unknown[]) => {
+      stdout.push(values.join(" "));
+    });
+    vi.spyOn(console, "error").mockImplementation((...values: unknown[]) => {
+      stderr.push(values.join(" "));
+    });
+    mocks.list.mockReturnValue(catalog);
+    mocks.find.mockImplementation((id: string) => id === scenario.id ? structuredClone(scenario) : undefined);
+    mocks.createRegistry.mockReturnValue({ list: mocks.list, find: mocks.find });
+    mocks.execute.mockResolvedValue(passedExecution);
+    mocks.readFile.mockReset();
+  });
+
+  afterEach(() => {
+    process.argv = originalArgv;
+    process.exitCode = originalExitCode;
+    vi.restoreAllMocks();
+  });
+
+  it("uses PASS/FAIL markers with --ascii on a passing run", async () => {
+    mocks.execute.mockImplementation((_scenario: ValidatedScenario, opts: { onStep?: (s: unknown) => void; onAssertion?: (a: unknown) => void }) => {
+      opts?.onStep?.({ id: "step-1", type: "payment", status: "passed", message: "Done." });
+      opts?.onAssertion?.({ type: "accountExists", status: "passed", expected: true, actual: true, message: "Exists." });
+      return Promise.resolve(passedExecution);
+    });
+    expect(await invokeCli("run", scenario.id, "--ascii")).toBe(0);
+    const out = stdout.join("\n");
+    expect(out).toContain("PASS");
+    expect(out).not.toContain("✓");
+  });
+
+  it("uses FAIL ASCII marker for a failed run", async () => {
+    mocks.execute.mockImplementation((_scenario: ValidatedScenario, opts: { onStep?: (s: unknown) => void; onAssertion?: (a: unknown) => void }) => {
+      opts?.onStep?.({ id: "step-1", type: "payment", status: "failed", message: "Rejected." });
+      opts?.onAssertion?.({ type: "accountExists", status: "failed", expected: true, actual: false, message: "Missing." });
+      return Promise.resolve({
+        steps: [{ id: "step-1", type: "payment", status: "failed", message: "Rejected." }],
+        assertions: [{ type: "accountExists", status: "failed", expected: true, actual: false, message: "Missing." }],
+      });
+    });
+    expect(await invokeCli("run", scenario.id, "--ascii")).toBe(1);
+    const out = stdout.join("\n") + stderr.join("\n");
+    expect(out).toContain("FAIL");
+    expect(out).not.toContain("✗");
+  });
+
+  it("uses ASCII PASS marker for validate with --ascii", async () => {
+    mocks.readFile.mockResolvedValueOnce(validJson);
+    expect(await invokeCli("validate", "scenario.json", "--ascii")).toBe(0);
+    expect(stdout.join("\n")).toContain("PASS");
+    expect(stdout.join("\n")).not.toContain("✓");
+  });
+
+  it("uses ASCII FAIL marker for validate failure with --ascii", async () => {
+    mocks.readFile.mockResolvedValueOnce(JSON.stringify({ ...scenario, network: "mainnet" }));
+    expect(await invokeCli("validate", "scenario.json", "--ascii")).toBe(1);
+    expect(stderr.join("\n")).toContain("FAIL");
+    expect(stderr.join("\n")).not.toContain("✗");
+  });
+
+  it("does not change JSON output format with --ascii", async () => {
+    expect(await invokeCli("run", scenario.id, "--ascii", "--output", "json")).toBe(0);
+    const result = JSON.parse(stdout.join("\n"));
+    expect(result.status).toBe("passed");
+    // no PASS/FAIL markers in JSON body
+    expect(stdout.join("\n")).not.toContain('"PASS"');
+  });
+
+  it("keeps default Unicode glyphs when --ascii is not passed", async () => {
+    mocks.execute.mockImplementation((_scenario: ValidatedScenario, opts: { onStep?: (s: unknown) => void }) => {
+      opts?.onStep?.({ id: "step-1", type: "payment", status: "passed", message: "Done." });
+      return Promise.resolve(passedExecution);
+    });
+    expect(await invokeCli("run", scenario.id)).toBe(0);
+    expect(stdout.join("\n")).toContain("✓");
+  });
+
+  it("--ascii appears in help text", async () => {
+    stdout = [];
+    expect(await invokeCli("--help")).toBe(1);
+    expect(stdout.join("\n")).toContain("--ascii");
+  });
+});

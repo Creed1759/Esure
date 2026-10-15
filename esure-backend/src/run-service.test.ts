@@ -164,3 +164,73 @@ describe("RunService", () => {
     expect(store.get(run.id)).toBeUndefined(); // still evicted
   });
 });
+
+describe("RunService — graceful shutdown", () => {
+  let store: InMemoryRunStore;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    store = new InMemoryRunStore();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("rejects new starts after drain() is called", async () => {
+    const gateway: LedgerGateway = { execute: vi.fn().mockResolvedValue({ steps: [], assertions: [] }) };
+    const service = new RunService(store, gateway, { maxConcurrentRuns: 2, runTimeoutMs: 1000, stepTimeoutMs: 500 });
+    service.drain();
+    await expect(service.start(dummyScenario)).rejects.toThrow("shutting down");
+  });
+
+  it("drain() resolves once all active executions finish", async () => {
+    let resolveExecution!: () => void;
+    const gateway: LedgerGateway = {
+      execute: vi.fn().mockReturnValue(new Promise<{ steps: StepResult[]; assertions: AssertionResult[] }>((resolve) => {
+        resolveExecution = () => resolve({ steps: [dummyStep], assertions: [dummyAssertion] });
+      })),
+    };
+    const service = new RunService(store, gateway, { maxConcurrentRuns: 2, runTimeoutMs: 60_000, stepTimeoutMs: 1_000 });
+    const run = await service.start(dummyScenario);
+    await vi.advanceTimersByTimeAsync(0); // enter execute()
+
+    let drained = false;
+    const drainPromise = service.drain().then(() => { drained = true; });
+
+    // drain not resolved yet
+    await Promise.resolve();
+    expect(drained).toBe(false);
+
+    // resolve the execution
+    resolveExecution();
+    await vi.runAllTimersAsync();
+    await drainPromise;
+
+    expect(drained).toBe(true);
+    expect(store.get(run.id)?.status).toBe("passed");
+  });
+
+  it("drain() with no active runs resolves immediately", async () => {
+    const gateway: LedgerGateway = { execute: vi.fn().mockResolvedValue({ steps: [], assertions: [] }) };
+    const service = new RunService(store, gateway, { maxConcurrentRuns: 2, runTimeoutMs: 1000, stepTimeoutMs: 500 });
+    await expect(service.drain()).resolves.toBeUndefined();
+  });
+
+  it("drain() resolves even when a run fails", async () => {
+    const gateway: LedgerGateway = {
+      execute: vi.fn().mockRejectedValue(new Error("network error")),
+    };
+    const service = new RunService(store, gateway, { maxConcurrentRuns: 2, runTimeoutMs: 1000, stepTimeoutMs: 500 });
+    const run = await service.start(dummyScenario);
+    await vi.runAllTimersAsync();
+    await expect(service.drain()).resolves.toBeUndefined();
+    expect(store.get(run.id)?.status).toBe("failed");
+  });
+
+  it("repeated drain() calls do not throw", async () => {
+    const gateway: LedgerGateway = { execute: vi.fn().mockResolvedValue({ steps: [], assertions: [] }) };
+    const service = new RunService(store, gateway, { maxConcurrentRuns: 2, runTimeoutMs: 1000, stepTimeoutMs: 500 });
+    await expect(Promise.all([service.drain(), service.drain(), service.drain()])).resolves.toBeDefined();
+  });
+});

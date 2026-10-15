@@ -1,4 +1,5 @@
 import Fastify, { type FastifyInstance } from "fastify";
+export type AppInstance = FastifyInstance & { runs: RunService };
 import type { AppConfig } from "./config.js";
 import type { LedgerGateway, ValidatedScenario } from "./domain.js";
 import { RunCapacityError } from "./errors.js";
@@ -20,7 +21,7 @@ const runBodySchema = {
   properties: { scenarioId: { type: "string", minLength: 1, maxLength: 64, pattern: "^[a-z0-9-]+$" }, inputs: { type: "object", additionalProperties: false, default: {} } },
 } as const;
 
-export function buildApp(options: BuildAppOptions): FastifyInstance {
+export function buildApp(options: BuildAppOptions): AppInstance {
   const app = Fastify({ logger: options.logger ?? false, bodyLimit: options.config.bodyLimitBytes, ajv: { customOptions: { removeAdditional: false } } });
   app.addContentTypeParser(["application/yaml", "application/x-yaml", "text/yaml"], { parseAs: "string" }, (_request, body, done) => done(null, body));
   const registry = createScenarioRegistry(options.config.scenarioDirectory);
@@ -85,9 +86,13 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
   app.post<{ Body: { scenarioId: string; inputs?: Record<string, never> } }>("/api/v1/runs", { schema: { body: runBodySchema } }, async (request, reply) => {
     const scenario = registry.find(request.body.scenarioId);
     if (!scenario) return reply.code(404).send(apiError("SCENARIO_NOT_FOUND", "The requested scenario is not available.", request.id));
+    if (runs.draining) return reply.code(503).send(apiError("SERVER_SHUTTING_DOWN", "The server is shutting down. Try again later.", request.id));
     return reply.code(202).send(await runs.start(scenario));
   });
-  app.post("/api/v1/runs/definitions", async (request, reply) => reply.code(202).send(await runs.start(submittedScenario(request.body, request.headers["content-type"]))));
+  app.post("/api/v1/runs/definitions", async (request, reply) => {
+    if (runs.draining) return reply.code(503).send(apiError("SERVER_SHUTTING_DOWN", "The server is shutting down. Try again later.", request.id));
+    return reply.code(202).send(await runs.start(submittedScenario(request.body, request.headers["content-type"])));
+  });
   app.get<{ Params: { runId: string } }>("/api/v1/runs/:runId", async (request, reply) => {
     const run = await runs.get(request.params.runId);
     if (!run) return reply.code(404).send(apiError("RUN_NOT_FOUND", "The requested run does not exist.", request.id));
@@ -116,7 +121,9 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     request.log.error({ err: error }, "Unhandled request error");
     return reply.code(500).send(apiError("INTERNAL_ERROR", "The request could not be completed.", request.id));
   });
-  return app;
+  const instance = app as unknown as AppInstance;
+  instance.runs = runs;
+  return instance;
 }
 
 function boundedInteger(value: string | undefined, fallback: number, minimum: number, maximum: number): number {

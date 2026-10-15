@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildApp } from "../src/app.js";
+import type { AppInstance } from "../src/app.js";
 import type { LedgerExecution, LedgerGateway, Scenario } from "../src/domain.js";
 import type { AppConfig } from "../src/config.js";
 import { SafeRunError } from "../src/errors.js";
@@ -36,7 +37,7 @@ const ledger: LedgerGateway = {
   })),
 };
 
-const apps: ReturnType<typeof buildApp>[] = [];
+const apps: AppInstance[] = [];
 
 function createApp(options: { config?: AppConfig; ledger?: LedgerGateway } = {}) {
   const app = buildApp({ config: options.config ?? config, ledger: options.ledger ?? ledger });

@@ -39,6 +39,18 @@ export class RunTimeoutError extends SafeRunError {
   }
 }
 
+export class ShutdownError extends SafeRunError {
+  constructor() {
+    super({
+      code: "SERVER_SHUTDOWN",
+      message: "The server is shutting down. The run was cancelled.",
+      category: "internal",
+      retryable: true,
+    });
+    this.name = "ShutdownError";
+  }
+}
+
 export async function withTimeout<T>(
   task: Promise<T>,
   timeoutMs: number,

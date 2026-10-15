@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { LedgerGateway, RunError, RunReport, RunSummary, ValidatedScenario } from "./domain.js";
 import type { RunStore } from "./run-store.js";
-import { RunCapacityError, RunTimeoutError, SafeRunError, withTimeout } from "./errors.js";
+import { RunCapacityError, RunTimeoutError, SafeRunError, ShutdownError, withTimeout } from "./errors.js";
 
 const emptySummary = (): RunSummary => ({
   stepsPassed: 0,
@@ -12,6 +12,8 @@ const emptySummary = (): RunSummary => ({
 
 export class RunService {
   #activeRuns = 0;
+  #draining = false;
+  readonly #activePromises = new Set<Promise<void>>();
 
   constructor(
     private readonly store: RunStore,
@@ -19,7 +21,25 @@ export class RunService {
     private readonly options: { maxConcurrentRuns: number; runTimeoutMs: number; stepTimeoutMs: number },
   ) {}
 
+  /** True once drain() has been called; new starts are rejected after this point. */
+  get draining(): boolean {
+    return this.#draining;
+  }
+
+  /**
+   * Signal that no new runs should be accepted, then wait for all active
+   * executions to finish or be cancelled.  The caller controls the outer
+   * deadline — call with a wrapping Promise.race / setTimeout as needed.
+   */
+  async drain(): Promise<void> {
+    this.#draining = true;
+    if (this.#activePromises.size > 0) {
+      await Promise.allSettled([...this.#activePromises]);
+    }
+  }
+
   async start(scenario: ValidatedScenario): Promise<RunReport> {
+    if (this.#draining) throw new RunCapacityError("The server is shutting down. No new runs are accepted.");
     if (this.#activeRuns >= this.options.maxConcurrentRuns) throw new RunCapacityError();
     const run: RunReport = {
       id: randomUUID(),
@@ -36,7 +56,11 @@ export class RunService {
     };
     await this.store.create(run);
     this.#activeRuns += 1;
-    setImmediate(() => void this.execute(run.id, scenario));
+    const execution = new Promise<void>((resolve) => {
+      setImmediate(() => void this.execute(run.id, scenario).then(resolve, resolve));
+    });
+    this.#activePromises.add(execution);
+    execution.then(() => this.#activePromises.delete(execution), () => this.#activePromises.delete(execution));
     return run;
   }
 
@@ -49,6 +73,8 @@ export class RunService {
     let progressUpdates = Promise.resolve();
     try {
       await this.store.update(id, { status: "validating" });
+      // If drain() was called between start() and this point, abort immediately.
+      if (this.#draining) controller.abort();
       await this.store.update(id, { status: "running" });
       const execution = this.ledger.execute(scenario, {
         signal: controller.signal,
