@@ -21,7 +21,10 @@ export type ScenarioAsset =
 
 export type ScenarioStep =
   | { id: string; type: "changeTrust"; account: string; asset: string; limit?: string }
-  | { id: string; type: "payment"; from: string; to: string; asset: string; amount: string };
+  | { id: string; type: "payment"; from: string; to: string; asset: string; amount: string }
+  | { id: string; type: "manageSellOffer"; account: string; sellingAsset: string; buyingAsset: string; amount: string; price: string }
+  | { id: string; type: "pathPaymentStrictReceive"; from: string; to: string; sendAsset: string; sendMax: string; destAsset: string; destAmount: string; path: string[] }
+  | { id: string; type: "pathPaymentStrictSend"; from: string; to: string; sendAsset: string; sendAmount: string; destAsset: string; destMin: string; path: string[] };
 
 export type ScenarioAssertion =
   | { type: "balanceEquals" | "balanceChangedBy"; account: string; asset: string; amount: string }
@@ -130,4 +133,3 @@ export interface LedgerExecutionOptions {
   onAssertion?: (assertion: AssertionResult) => void;
   friendbotRetry?: FriendbotRetryConfig;
 }
-

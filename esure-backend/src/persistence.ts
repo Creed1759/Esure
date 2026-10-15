@@ -2,12 +2,14 @@ import type { AppConfig } from "./config.js";
 import { assertMigrationsCurrent, Database } from "./database.js";
 import type { ScenarioRegistry } from "./scenario-loader.js";
 import { PublishedScenarioRepository } from "./published-scenarios.js";
+import { PostgresRunStore } from "./run-store.js";
 
 export type PersistenceState = "disabled" | "initializing" | "ready" | "unavailable";
 
 export class PersistenceCoordinator {
   readonly database?: Database;
   readonly repository?: PublishedScenarioRepository;
+  readonly runStore?: PostgresRunStore;
   state: PersistenceState;
 
   constructor(private readonly config: AppConfig, private readonly registry: ScenarioRegistry) {
@@ -15,6 +17,9 @@ export class PersistenceCoordinator {
     if (config.persistenceMode === "published") {
       this.database = new Database(config);
       this.repository = new PublishedScenarioRepository(this.database);
+      if (config.runPersistenceEnabled) {
+        this.runStore = new PostgresRunStore(this.database, config.runRetentionMs);
+      }
     }
   }
 

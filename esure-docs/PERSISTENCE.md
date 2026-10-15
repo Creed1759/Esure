@@ -1,10 +1,21 @@
 # P2 Persistence Contract
 
-P2.0-P2.2 add an optional PostgreSQL-backed published-scenario catalogue. Run
-creation and execution remain on the P1 in-memory path until P2.3 is approved.
-`PERSISTENCE_MODE=disabled` is the default. `published` mode never falls back to
-memory: the process verifies every migration filename and SHA-256 checksum at
-startup and fails readiness/startup if the database is missing or stale.
+P2 adds an optional PostgreSQL-backed published-scenario catalogue and,
+separately, opt-in run-report persistence. `PERSISTENCE_MODE=disabled` is the
+default. `published` mode never falls back to memory: the process verifies every
+migration filename and SHA-256 checksum at startup and fails readiness/startup
+if the database is missing or stale. Run reports remain in memory unless
+`RUN_PERSISTENCE_ENABLED=true` is also set; enabling it requires
+`PERSISTENCE_MODE=published` and `DATABASE_URL`.
+
+Migration 003 extends the existing `runs` table with report fields and a stable
+`run_id`. Existing normalized worker-run columns and child tables remain
+available. PostgreSQL run reports keep the existing API shape, redact Stellar
+secret seeds and account keys before writing JSON, and expire from reads using
+`RUN_RETENTION_MS`. The supplied
+`migrations/003_persistent_run_history.down.sql` reverses the additive change
+and deletes report-only rows; use it only when intentionally discarding that
+history.
 
 ## Identity and immutability
 
@@ -29,8 +40,8 @@ provide the final concurrency guard.
 
 ## Database roles
 
-- `esure_application`: read published scenarios/versions; later insert runs. It
-  cannot mutate versions or access cleanup audit records.
+- `esure_application`: read published scenarios/versions and create/update run
+  reports. It cannot mutate versions or access cleanup audit records.
 - `esure_worker`: later claims and progressively updates runs and evidence. It
   cannot mutate scenario versions or access cleanup audit records.
 - `esure_maintenance`: future bounded cleanup only. Version deletion additionally

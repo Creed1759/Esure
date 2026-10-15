@@ -55,7 +55,7 @@ describe("RunService", () => {
     };
     
     const service = new RunService(store, gateway, { maxConcurrentRuns: 1, runTimeoutMs: 1000, stepTimeoutMs: 500 });
-    const run = service.start(dummyScenario);
+    const run = await service.start(dummyScenario);
     expect(run.status).toBe("requested");
     
     // allow event loop to run async execute
@@ -83,7 +83,7 @@ describe("RunService", () => {
     };
 
     const service = new RunService(store, gateway, { maxConcurrentRuns: 1, runTimeoutMs: 1000, stepTimeoutMs: 500 });
-    const run = service.start(dummyScenario);
+    const run = await service.start(dummyScenario);
     
     // Run immediate tasks to enter execute()
     await vi.advanceTimersByTimeAsync(0);
@@ -120,7 +120,7 @@ describe("RunService", () => {
     expect(afterLateResolve?.steps).toHaveLength(1); // still unmodified
     
     // Fire late settlement (reject) on a new run
-    const run2 = service.start(dummyScenario);
+    const run2 = await service.start(dummyScenario);
     await Promise.resolve();
     await vi.advanceTimersByTimeAsync(1500);
     rejectExecution(new Error("Late error"));
@@ -144,7 +144,7 @@ describe("RunService", () => {
     store = new InMemoryRunStore(500, retentionMs);
     const service = new RunService(store, gateway, { maxConcurrentRuns: 1, runTimeoutMs: 1000, stepTimeoutMs: 500 });
     
-    const run = service.start(dummyScenario);
+    const run = await service.start(dummyScenario);
     await Promise.resolve();
     
     // trigger timeout

@@ -26,8 +26,17 @@ export type { FriendbotRetryConfig };
 
 export interface StellarGatewayOptions {
   friendbotRetry?: FriendbotRetryConfig;
+  horizonRetry?: HorizonRetryConfig;
   fetch?: typeof fetch;
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
+}
+
+export interface HorizonRetryConfig {
+  maxRetries?: number;
+  baseDelayMs?: number;
+  maxDelayMs?: number;
+  factor?: number;
+  random?: () => number;
 }
 
 export const DEFAULT_FRIENDBOT_RETRY_CONFIG = {
@@ -37,9 +46,16 @@ export const DEFAULT_FRIENDBOT_RETRY_CONFIG = {
   factor: 2,
 } as const;
 
+export const DEFAULT_HORIZON_RETRY_CONFIG = {
+  maxRetries: 3,
+  baseDelayMs: 1_000,
+  maxDelayMs: 4_000,
+  factor: 2,
+} as const;
+
 export function calculateRetryDelay(
   attempt: number,
-  config: FriendbotRetryConfig = {},
+  config: FriendbotRetryConfig | HorizonRetryConfig = {},
 ): number {
   const baseDelayMs = config.baseDelayMs ?? DEFAULT_FRIENDBOT_RETRY_CONFIG.baseDelayMs;
   const maxDelayMs = config.maxDelayMs ?? DEFAULT_FRIENDBOT_RETRY_CONFIG.maxDelayMs;
@@ -164,11 +180,43 @@ export class StellarTestnetGateway implements LedgerGateway {
       const response = await this.submit(required(accounts, definition.account), [Operation.changeTrust({ asset: required(assets, definition.asset), ...(definition.limit && { limit: definition.limit }) })]);
       return transactionStep(definition.id, definition.type, response);
     }
-    const response = await this.submit(required(accounts, definition.from), [Operation.payment({
-      destination: required(accounts, definition.to).publicKey(),
-      asset: required(assets, definition.asset),
-      amount: definition.amount,
-    })]);
+    if (definition.type === "payment") {
+      const response = await this.submit(required(accounts, definition.from), [Operation.payment({
+        destination: required(accounts, definition.to).publicKey(),
+        asset: required(assets, definition.asset),
+        amount: definition.amount,
+      })]);
+      return transactionStep(definition.id, definition.type, response);
+    }
+    if (definition.type === "manageSellOffer") {
+      const response = await this.submit(required(accounts, definition.account), [Operation.manageSellOffer({
+        selling: required(assets, definition.sellingAsset),
+        buying: required(assets, definition.buyingAsset),
+        amount: definition.amount,
+        price: definition.price,
+      })]);
+      return transactionStep(definition.id, definition.type, response);
+    }
+
+    const path = definition.path.map((assetId) => required(assets, assetId));
+    const operation = definition.type === "pathPaymentStrictReceive"
+      ? Operation.pathPaymentStrictReceive({
+        sendAsset: required(assets, definition.sendAsset),
+        sendMax: definition.sendMax,
+        destination: required(accounts, definition.to).publicKey(),
+        destAsset: required(assets, definition.destAsset),
+        destAmount: definition.destAmount,
+        path,
+      })
+      : Operation.pathPaymentStrictSend({
+        sendAsset: required(assets, definition.sendAsset),
+        sendAmount: definition.sendAmount,
+        destination: required(accounts, definition.to).publicKey(),
+        destAsset: required(assets, definition.destAsset),
+        destMin: definition.destMin,
+        path,
+      });
+    const response = await this.submit(required(accounts, definition.from), [operation]);
     return transactionStep(definition.id, definition.type, response);
   }
 
@@ -298,13 +346,19 @@ export class StellarTestnetGateway implements LedgerGateway {
   }
 
 
-  private async submit(source: Keypair, operations: Array<ReturnType<typeof Operation.payment> | ReturnType<typeof Operation.changeTrust>>) {
-    const account = await this.#server.loadAccount(source.publicKey());
+  private async submit(source: Keypair, operations: Array<
+    ReturnType<typeof Operation.payment> |
+    ReturnType<typeof Operation.changeTrust> |
+    ReturnType<typeof Operation.manageSellOffer> |
+    ReturnType<typeof Operation.pathPaymentStrictReceive> |
+    ReturnType<typeof Operation.pathPaymentStrictSend>
+  >) {
+    const account = await this.withHorizonRetry(() => this.#server.loadAccount(source.publicKey()));
     const builder = new TransactionBuilder(account, { fee: BASE_FEE, networkPassphrase: Networks.TESTNET, timebounds: await this.#server.fetchTimebounds(60) });
     for (const operation of operations) builder.addOperation(operation);
     const transaction = builder.build();
     transaction.sign(source);
-    return this.#server.submitTransaction(transaction);
+    return this.withHorizonRetry(() => this.#server.submitTransaction(transaction));
   }
 
   private async readBalanceOrZero(publicKey: string, asset: Asset, options: LedgerExecutionOptions, stepId: string): Promise<string> {
@@ -319,7 +373,7 @@ export class StellarTestnetGateway implements LedgerGateway {
   }
 
   private async balance(publicKey: string, asset: Asset): Promise<string> {
-    const account = await this.#server.loadAccount(publicKey);
+    const account = await this.withHorizonRetry(() => this.#server.loadAccount(publicKey));
     const found = account.balances.find((balance) => asset.isNative()
       ? balance.asset_type === "native"
       : "asset_code" in balance && balance.asset_code === asset.getCode() && "asset_issuer" in balance && balance.asset_issuer === asset.getIssuer());
@@ -327,13 +381,44 @@ export class StellarTestnetGateway implements LedgerGateway {
   }
 
   private async accountExists(publicKey: string): Promise<boolean> {
-    try { await this.#server.loadAccount(publicKey); return true; }
+    try { await this.withHorizonRetry(() => this.#server.loadAccount(publicKey)); return true; }
     catch (error) { if (isNotFound(error)) return false; throw error; }
   }
 
   private async trustlineExists(publicKey: string, asset: Asset): Promise<boolean> {
-    const account = await this.#server.loadAccount(publicKey);
+    const account = await this.withHorizonRetry(() => this.#server.loadAccount(publicKey));
     return account.balances.some((balance) => "asset_code" in balance && balance.asset_code === asset.getCode() && "asset_issuer" in balance && balance.asset_issuer === asset.getIssuer());
+  }
+
+  private async withHorizonRetry<T>(operation: () => Promise<T>): Promise<T> {
+    const config = {
+      maxRetries: Math.max(0, this.#options.horizonRetry?.maxRetries ?? DEFAULT_HORIZON_RETRY_CONFIG.maxRetries),
+      baseDelayMs: this.#options.horizonRetry?.baseDelayMs ?? DEFAULT_HORIZON_RETRY_CONFIG.baseDelayMs,
+      maxDelayMs: this.#options.horizonRetry?.maxDelayMs ?? DEFAULT_HORIZON_RETRY_CONFIG.maxDelayMs,
+      factor: this.#options.horizonRetry?.factor ?? DEFAULT_HORIZON_RETRY_CONFIG.factor,
+      random: this.#options.horizonRetry?.random ?? Math.random,
+    };
+    const sleepFn = this.#options.sleep ?? signalSleep;
+    let retries = 0;
+
+    while (true) {
+      try {
+        return await operation();
+      } catch (error) {
+        if (!isRetryableHorizonError(error)) throw error;
+        if (retries >= config.maxRetries) {
+          throw new SafeRunError({
+            code: "HORIZON_UNAVAILABLE",
+            message: `Horizon request failed after ${retries} retries.`,
+            category: "network",
+            retryable: true,
+          });
+        }
+        retries += 1;
+        const delay = calculateRetryDelay(retries, config);
+        await sleepFn(delay);
+      }
+    }
   }
 }
 
@@ -407,6 +492,20 @@ function failureCode(transaction?: string, operations?: string[]): string { retu
 function isRecord(value: unknown): value is Record<string, unknown> { return typeof value === "object" && value !== null; }
 function safeCode(value: unknown): string | undefined { return typeof value === "string" && /^[a-z0-9_]{1,64}$/.test(value) ? value : undefined; }
 function isNotFound(error: unknown): boolean { return isRecord(error) && isRecord(error.response) && error.response.status === 404; }
+function isRetryableHorizonError(error: unknown): boolean {
+  if (!isRecord(error)) return false;
+  const response = isRecord(error.response) ? error.response : undefined;
+  const status = response?.status;
+  if (status === 429 || status === 503) return true;
+  if (typeof status === "number") return false;
+  const code = typeof error.code === "string" ? error.code.toUpperCase() : "";
+  const name = typeof error.name === "string" ? error.name.toLowerCase() : "";
+  const message = typeof error.message === "string" ? error.message.toLowerCase() : "";
+  return ["ECONNABORTED", "ETIMEDOUT", "ESOCKETTIMEDOUT"].includes(code)
+    || name === "timeouterror"
+    || message.includes("timeout")
+    || message.includes("timed out");
+}
 
 export function canonicalDecimal(value: string): string {
   const [integer = "0", fraction = ""] = value.split(".");

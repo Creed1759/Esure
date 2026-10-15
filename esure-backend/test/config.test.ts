@@ -19,7 +19,22 @@ describe("loadConfig", () => {
 
   it("keeps persistence explicitly disabled unless configured", () => {
     expect(loadConfig({}).persistenceMode).toBe("disabled");
+    expect(loadConfig({}).runPersistenceEnabled).toBe(false);
     expect(() => loadConfig({ PERSISTENCE_MODE: "published" })).toThrow(/DATABASE_URL/);
     expect(() => loadConfig({ PERSISTENCE_MODE: "automatic" })).toThrow(/PERSISTENCE_MODE/);
+  });
+
+  it("requires published PostgreSQL persistence to enable run history", () => {
+    expect(loadConfig({
+      PERSISTENCE_MODE: "published",
+      DATABASE_URL: "postgres://localhost/esure",
+      RUN_PERSISTENCE_ENABLED: "true",
+    }).runPersistenceEnabled).toBe(true);
+    expect(() => loadConfig({ RUN_PERSISTENCE_ENABLED: "true" })).toThrow(/PERSISTENCE_MODE=published/);
+    expect(() => loadConfig({
+      PERSISTENCE_MODE: "published",
+      DATABASE_URL: "postgres://localhost/esure",
+      RUN_PERSISTENCE_ENABLED: "yes",
+    })).toThrow(/RUN_PERSISTENCE_ENABLED/);
   });
 });

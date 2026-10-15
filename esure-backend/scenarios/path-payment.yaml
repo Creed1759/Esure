@@ -1,0 +1,91 @@
+schemaVersion: 1
+id: path-payment
+version: 1
+name: XLM to USDC path payment
+description: Create two Testnet orderbook offers and route XLM through EUR to deliver test-issued USDC.
+network: testnet
+accounts:
+  - id: sender
+    generate: true
+    fund: true
+  - id: market-maker
+    generate: true
+    fund: true
+  - id: recipient
+    generate: true
+    fund: true
+  - id: issuer
+    generate: true
+    fund: true
+assets:
+  - id: xlm
+    type: native
+  - id: eur
+    type: issued
+    code: EUR
+    issuer: issuer
+  - id: usdc
+    type: issued
+    code: USDC
+    issuer: issuer
+steps:
+  - id: market-maker-trusts-eur
+    type: changeTrust
+    account: market-maker
+    asset: eur
+    limit: "1000"
+  - id: market-maker-trusts-usdc
+    type: changeTrust
+    account: market-maker
+    asset: usdc
+    limit: "1000"
+  - id: recipient-trusts-usdc
+    type: changeTrust
+    account: recipient
+    asset: usdc
+    limit: "1000"
+  - id: issuer-funds-market-maker-eur
+    type: payment
+    from: issuer
+    to: market-maker
+    asset: eur
+    amount: "100"
+  - id: issuer-funds-market-maker-usdc
+    type: payment
+    from: issuer
+    to: market-maker
+    asset: usdc
+    amount: "100"
+  - id: offer-eur-for-xlm
+    type: manageSellOffer
+    account: market-maker
+    sellingAsset: eur
+    buyingAsset: xlm
+    amount: "100"
+    price: "1"
+  - id: offer-usdc-for-eur
+    type: manageSellOffer
+    account: market-maker
+    sellingAsset: usdc
+    buyingAsset: eur
+    amount: "100"
+    price: "1"
+  - id: pay-usdc-through-eur
+    type: pathPaymentStrictReceive
+    from: sender
+    to: recipient
+    sendAsset: xlm
+    sendMax: "10"
+    destAsset: usdc
+    destAmount: "5"
+    path:
+      - eur
+assertions:
+  - type: balanceEquals
+    account: recipient
+    asset: usdc
+    amount: "5"
+  - type: stepSucceeded
+    step: pay-usdc-through-eur
+  - type: transactionConfirmed
+    step: pay-usdc-through-eur

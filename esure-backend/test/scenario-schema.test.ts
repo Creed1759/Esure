@@ -6,6 +6,7 @@ import type { ScenarioDefinition } from "../src/domain.js";
 import { canonicalJson, contentHash, parseScenario, prepareScenario, ScenarioRegistry } from "../src/scenario-loader.js";
 import { SCENARIO_LIMITS, ScenarioValidationError } from "../src/scenario-schema.js";
 import { completeScenario } from "./fixtures.js";
+import { createScenarioRegistry } from "../src/scenarios.js";
 
 const temporaryDirectories: string[] = [];
 afterEach(() => {
@@ -86,5 +87,41 @@ assertions:
     writeFileSync(join(directory, "new-scenario.json"), JSON.stringify({ ...completeScenario(), id: "external-scenario", name: "External scenario" }));
     const registry = new ScenarioRegistry([directory]);
     expect(registry.find("external-scenario")).toMatchObject({ id: "external-scenario", name: "External scenario" });
+  });
+
+  it("loads the bundled multi-hop path payment scenario", () => {
+    const scenario = createScenarioRegistry().find("path-payment");
+    expect(scenario).toMatchObject({
+      id: "path-payment",
+      steps: expect.arrayContaining([
+        expect.objectContaining({ type: "manageSellOffer" }),
+        expect.objectContaining({
+          type: "pathPaymentStrictReceive",
+          sendAsset: "xlm",
+          destAsset: "usdc",
+          path: ["eur"],
+        }),
+      ]),
+    });
+    expect(scenario?.accounts).toHaveLength(4);
+  });
+
+  it("rejects unresolved or endpoint assets in path payment paths", () => {
+    const scenario = createScenarioRegistry().find("path-payment")!;
+    const { contentHash: _invalidHash, ...invalidReference } = structuredClone(scenario);
+    const pathPayment = invalidReference.steps.find((step) => step.type === "pathPaymentStrictReceive");
+    if (pathPayment?.type === "pathPaymentStrictReceive") pathPayment.path = ["unknown"];
+    expect(() => prepareScenario(invalidReference)).toThrow(ScenarioValidationError);
+
+    const { contentHash: _endpointHash, ...endpointInPath } = structuredClone(scenario);
+    const payment = endpointInPath.steps.find((step) => step.type === "pathPaymentStrictReceive");
+    if (payment?.type === "pathPaymentStrictReceive") payment.path = ["xlm"];
+    try {
+      prepareScenario(endpointInPath);
+      throw new Error("Expected invalid path asset to be rejected");
+    } catch (error) {
+      if (!(error instanceof ScenarioValidationError)) throw error;
+      expect(error.issues).toContain("step pay-usdc-through-eur path must contain only intermediate assets");
+    }
   });
 });

@@ -37,7 +37,7 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     if (!result.allowed) { reply.header("retry-after", result.retryAfterSeconds); return reply.code(429).send(apiError("RATE_LIMITED", "Request limit exceeded. Try again later.", request.id)); }
   });
   const ledger = options.ledger ?? new StellarTestnetGateway(options.config.horizonUrl, options.config.friendbotUrl);
-  const runs = new RunService(new InMemoryRunStore(options.config.maxStoredRuns, options.config.runRetentionMs), ledger, {
+  const runs = new RunService(persistence.runStore ?? new InMemoryRunStore(options.config.maxStoredRuns, options.config.runRetentionMs), ledger, {
     maxConcurrentRuns: options.config.maxConcurrentRuns, runTimeoutMs: options.config.runTimeoutMs, stepTimeoutMs: options.config.stepTimeoutMs,
   });
 
@@ -85,16 +85,16 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
   app.post<{ Body: { scenarioId: string; inputs?: Record<string, never> } }>("/api/v1/runs", { schema: { body: runBodySchema } }, async (request, reply) => {
     const scenario = registry.find(request.body.scenarioId);
     if (!scenario) return reply.code(404).send(apiError("SCENARIO_NOT_FOUND", "The requested scenario is not available.", request.id));
-    return reply.code(202).send(runs.start(scenario));
+    return reply.code(202).send(await runs.start(scenario));
   });
-  app.post("/api/v1/runs/definitions", async (request, reply) => reply.code(202).send(runs.start(submittedScenario(request.body, request.headers["content-type"]))));
+  app.post("/api/v1/runs/definitions", async (request, reply) => reply.code(202).send(await runs.start(submittedScenario(request.body, request.headers["content-type"]))));
   app.get<{ Params: { runId: string } }>("/api/v1/runs/:runId", async (request, reply) => {
-    const run = runs.get(request.params.runId);
+    const run = await runs.get(request.params.runId);
     if (!run) return reply.code(404).send(apiError("RUN_NOT_FOUND", "The requested run does not exist.", request.id));
     return run;
   });
   app.get<{ Params: { runId: string } }>("/api/v1/runs/:runId/report", async (request, reply) => {
-    const run = runs.get(request.params.runId);
+    const run = await runs.get(request.params.runId);
     if (!run) return reply.code(404).send(apiError("RUN_NOT_FOUND", "The requested run does not exist.", request.id));
     if (run.status !== "passed" && run.status !== "failed") return reply.code(409).send(apiError("RUN_NOT_COMPLETE", "The requested run is not complete.", request.id));
     return reply.header("content-disposition", `attachment; filename=esure-run-${run.id}.json`).send(run);

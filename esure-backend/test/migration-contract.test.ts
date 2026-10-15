@@ -30,4 +30,17 @@ describe("P2 persistence SQL contract", () => {
     expect(sql).toContain("REVOKE ALL ON cleanup_audit FROM esure_application");
     expect(sql).toContain("GRANT SELECT, INSERT ON cleanup_audit TO esure_maintenance");
   });
+
+  it("adds redacted run report storage with a reversible migration", async () => {
+    const up = await readFile("migrations/003_persistent_run_history.sql", "utf8");
+    const down = await readFile("migrations/003_persistent_run_history.down.sql", "utf8");
+    for (const column of ["run_id", "scenario_id", "scenario_version", "duration_ms", "steps", "assertions", "summary"]) {
+      expect(up).toContain(column);
+    }
+    expect(await readFile("migrations/001_persistence_foundation.sql", "utf8")).toContain("error jsonb");
+    expect(up).toContain("GRANT SELECT, INSERT, UPDATE ON runs TO esure_application");
+    expect(down).toContain("DELETE FROM schema_migrations WHERE version = 3");
+    expect(down).toContain("DROP COLUMN steps");
+    expect(up).not.toMatch(/secret_seed|signed_xdr|raw_error/i);
+  });
 });

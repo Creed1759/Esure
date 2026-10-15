@@ -15,6 +15,7 @@ export interface AppConfig {
   bodyLimitBytes: number;
   scenarioDirectory?: string;
   persistenceMode: "disabled" | "published";
+  runPersistenceEnabled: boolean;
   databaseUrl?: string;
   databasePoolMax: number;
   databaseConnectionTimeoutMs: number;
@@ -44,6 +45,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   if (persistenceMode === "published" && !env.DATABASE_URL) {
     throw new Error("DATABASE_URL is required when PERSISTENCE_MODE=published");
   }
+  const runPersistenceEnabled = env.RUN_PERSISTENCE_ENABLED === "true";
+  if (env.RUN_PERSISTENCE_ENABLED !== undefined && env.RUN_PERSISTENCE_ENABLED !== "true" && env.RUN_PERSISTENCE_ENABLED !== "false") {
+    throw new Error("RUN_PERSISTENCE_ENABLED must be true or false");
+  }
+  if (runPersistenceEnabled && persistenceMode !== "published") {
+    throw new Error("RUN_PERSISTENCE_ENABLED=true requires PERSISTENCE_MODE=published");
+  }
 
   return {
     host: env.HOST ?? "127.0.0.1",
@@ -61,6 +69,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     rateLimitWindowMs: integerEnv(env, "RATE_LIMIT_WINDOW_MS", 60_000, 1_000, 3_600_000),
     bodyLimitBytes: integerEnv(env, "BODY_LIMIT_BYTES", 16_384, 1_024, 1_048_576),
     persistenceMode,
+    runPersistenceEnabled,
     databasePoolMax: integerEnv(env, "DATABASE_POOL_MAX", 5, 1, 20),
     databaseConnectionTimeoutMs: integerEnv(env, "DATABASE_CONNECTION_TIMEOUT_MS", 5_000, 500, 30_000),
     databaseQueryTimeoutMs: integerEnv(env, "DATABASE_QUERY_TIMEOUT_MS", 5_000, 100, 30_000),

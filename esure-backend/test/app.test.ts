@@ -22,6 +22,7 @@ const config: AppConfig = {
   rateLimitWindowMs: 60_000,
   bodyLimitBytes: 16_384,
   persistenceMode: "disabled",
+  runPersistenceEnabled: false,
   databasePoolMax: 5,
   databaseConnectionTimeoutMs: 5_000,
   databaseQueryTimeoutMs: 5_000,

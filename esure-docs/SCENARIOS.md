@@ -20,10 +20,19 @@ ESURE includes 10 MVP scenarios for Testnet integration testing:
 | `trustline-already-exists` | Multiple payments using existing trustline | Pass |
 | `basic-payment-with-checks` | Send XLM and verify both accounts exist | Pass |
 | `minimum-xlm-payment` | Send minimum viable XLM (1 stroop) | Pass |
+| `path-payment` | Create EUR/XLM and USDC/EUR offers and send XLM through EUR to deliver USDC | Pass on Testnet |
 
 These scenarios demonstrate XLM transfers, issued assets, trustline management,
 expected failure handling, and multi-step transaction flows that Stellar developers
 commonly need to test.
+
+`path-payment` provisions its own Testnet liquidity. It creates generated sender,
+market-maker, recipient, and issuer accounts, then submits trustlines, issues
+test-issued EUR/USDC assets to the market maker, and places EUR/XLM and USDC/EUR
+sell offers. The USDC in this isolated scenario is not Circle-issued USDC. A
+strict-receive path payment converts sender XLM through EUR to deliver exactly
+5 USDC to the recipient (with a 10 XLM maximum). It does not depend on
+pre-existing public order-book liquidity.
 
 ```yaml
 schemaVersion: 1
@@ -70,6 +79,12 @@ assertions:
 
 - `changeTrust`: `id`, `account`, `asset`, and optional positive `limit`.
 - `payment`: `id`, `from`, `to`, `asset`, and positive decimal `amount`.
+- `manageSellOffer`: `id`, `account`, `sellingAsset`, `buyingAsset`, positive
+  `amount`, and positive `price`.
+- `pathPaymentStrictReceive`: `id`, `from`, `to`, `sendAsset`, `sendMax`,
+  `destAsset`, `destAmount`, and up to five intermediate `path` asset IDs.
+- `pathPaymentStrictSend`: `id`, `from`, `to`, `sendAsset`, `sendAmount`,
+  `destAsset`, `destMin`, and up to five intermediate `path` asset IDs.
 
 Amounts are strings with at most seven fractional digits and must fit Stellar's
 signed 64-bit stroop range.

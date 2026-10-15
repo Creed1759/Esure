@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { Horizon } from "@stellar/stellar-sdk";
 import type { ValidatedScenario } from "../src/domain.js";
+import { createScenarioRegistry } from "../src/scenarios.js";
 import {
   balanceDeltaAssertion,
   calculateRetryDelay,
@@ -151,6 +153,273 @@ describe("StellarTestnetGateway Friendbot bounded retry", () => {
     vi.useFakeTimers();
   });
 
+  describe("StellarTestnetGateway path payment operations", () => {
+    const response = {
+      hash: "a".repeat(64),
+      ledger: 123,
+    } as Horizon.HorizonApi.SubmitTransactionResponse;
+
+    beforeEach(() => {
+      vi.spyOn(Horizon.Server.prototype, "loadAccount")
+        .mockImplementation(async (publicKey) => testHorizonAccount(publicKey));
+      vi.spyOn(Horizon.Server.prototype, "fetchTimebounds").mockImplementation(async () => ({
+        minTime: Math.floor(Date.now() / 1_000),
+        maxTime: Math.floor(Date.now() / 1_000) + 60,
+      }));
+    });
+
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it("executes the bundled market-making and strict-receive path operations", async () => {
+      const submittedTypes: string[] = [];
+      const submitted = vi.spyOn(Horizon.Server.prototype, "submitTransaction").mockImplementation(async (transaction) => {
+        submittedTypes.push(...transaction.operations.map((operation) => operation.type));
+        return response;
+      });
+      const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response(null, { status: 200 }));
+      const gateway = new StellarTestnetGateway("https://horizon.example", "https://friendbot.example", {
+        fetch,
+        sleep: async () => {},
+      });
+      const bundledScenario = createScenarioRegistry().find("path-payment")!;
+      const scenario = {
+        ...bundledScenario,
+        assertions: bundledScenario.assertions.filter((assertion) => assertion.type !== "balanceEquals"),
+      };
+
+      const execution = await gateway.execute(scenario);
+
+      expect(execution.steps.at(-1)).toMatchObject({ id: "pay-usdc-through-eur", status: "passed" });
+      expect(submittedTypes).toEqual([
+        "changeTrust",
+        "changeTrust",
+        "changeTrust",
+        "payment",
+        "payment",
+        "manageSellOffer",
+        "manageSellOffer",
+        "pathPaymentStrictReceive",
+      ]);
+      expect(submitted).toHaveBeenCalledTimes(8);
+      expect(execution.assertions.every((assertion) => assertion.status === "passed")).toBe(true);
+    });
+
+    it("supports strict-send path payment operations", async () => {
+      const submittedTypes: string[] = [];
+      vi.spyOn(Horizon.Server.prototype, "submitTransaction").mockImplementation(async (transaction) => {
+        submittedTypes.push(...transaction.operations.map((operation) => operation.type));
+        return response;
+      });
+      const definition: ValidatedScenario = {
+        schemaVersion: 1,
+        id: "path-payment-strict-send-test",
+        version: 1,
+        name: "Strict-send test",
+        description: "Exercises strict-send operation construction.",
+        network: "testnet",
+        contentHash: "sha256:test",
+        accounts: [
+          { id: "sender", generate: true, fund: false },
+          { id: "recipient", generate: true, fund: false },
+          { id: "issuer", generate: true, fund: false },
+        ],
+        assets: [
+          { id: "xlm", type: "native" },
+          { id: "usd", type: "issued", code: "USD", issuer: "issuer" },
+        ],
+        steps: [{
+          id: "strict-send",
+          type: "pathPaymentStrictSend",
+          from: "sender",
+          to: "recipient",
+          sendAsset: "xlm",
+          sendAmount: "2",
+          destAsset: "usd",
+          destMin: "1",
+          path: [],
+        }],
+        assertions: [{ type: "stepSucceeded", step: "strict-send" }],
+      };
+
+      await new StellarTestnetGateway("https://horizon.example", "https://friendbot.example").execute(definition);
+
+      expect(submittedTypes).toEqual(["pathPaymentStrictSend"]);
+    });
+  });
+
+  function testHorizonAccount(publicKey: string): Horizon.AccountResponse {
+    const unusedCollection = async (): Promise<never> => {
+      throw new Error("Unexpected collection request in gateway test");
+    };
+    return new Horizon.AccountResponse({
+      _links: { self: { href: "https://horizon.example/accounts/test" } },
+      id: publicKey,
+      paging_token: "1",
+      account_id: publicKey,
+      sequence: "1",
+      subentry_count: 0,
+      last_modified_ledger: 1,
+      last_modified_time: "2026-01-01T00:00:00Z",
+      thresholds: { low_threshold: 0, med_threshold: 0, high_threshold: 0 },
+      flags: { auth_immutable: false, auth_required: false, auth_revocable: false, auth_clawback_enabled: false },
+      balances: [],
+      signers: [],
+      num_sponsoring: 0,
+      num_sponsored: 0,
+      data: async () => ({ value: "" }),
+      data_attr: {},
+      effects: unusedCollection,
+      offers: unusedCollection,
+      operations: unusedCollection,
+      payments: unusedCollection,
+      trades: unusedCollection,
+      transactions: unusedCollection,
+    });
+  }
+
+  describe("StellarTestnetGateway Horizon retries", () => {
+    const accountScenario: ValidatedScenario = {
+      schemaVersion: 1,
+      id: "horizon-account-retry",
+      version: 1,
+      name: "Horizon account retry",
+      description: "Exercises Horizon account loading retries",
+      network: "testnet",
+      contentHash: "sha256:account",
+      accounts: [{ id: "alice", generate: true, fund: false }],
+      assets: [{ id: "xlm", type: "native" }],
+      steps: [],
+      assertions: [{ type: "accountExists", account: "alice" }],
+    };
+
+    function horizonResponseError(status: number): Error {
+      return Object.assign(new Error(`HTTP ${status}`), { response: { status } });
+    }
+
+    function mockAccount(publicKey: string): Awaited<ReturnType<typeof Horizon.Server.prototype.loadAccount>> {
+      const unusedCollection = async (): Promise<never> => {
+        throw new Error("Unexpected collection request in gateway test");
+      };
+      const response: Horizon.ServerApi.AccountRecord = {
+        _links: { self: { href: "https://horizon.example/accounts/test" } },
+        id: publicKey,
+        paging_token: "1",
+        account_id: publicKey,
+        sequence: "1",
+        subentry_count: 0,
+        last_modified_ledger: 1,
+        last_modified_time: "2026-01-01T00:00:00Z",
+        thresholds: { low_threshold: 0, med_threshold: 0, high_threshold: 0 },
+        flags: { auth_immutable: false, auth_required: false, auth_revocable: false, auth_clawback_enabled: false },
+        balances: [],
+        signers: [],
+        num_sponsoring: 0,
+        num_sponsored: 0,
+        data: async () => ({ value: "" }),
+        data_attr: {},
+        effects: unusedCollection,
+        offers: unusedCollection,
+        operations: unusedCollection,
+        payments: unusedCollection,
+        trades: unusedCollection,
+        transactions: unusedCollection,
+      };
+      return new Horizon.AccountResponse(response);
+    }
+
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+      vi.restoreAllMocks();
+      vi.useRealTimers();
+    });
+
+    it.each([429, 503])("retries account loading after HTTP %i and succeeds without real backoff delays", async (status) => {
+      const loadAccount = vi.spyOn(Horizon.Server.prototype, "loadAccount")
+        .mockRejectedValueOnce(horizonResponseError(status))
+        .mockImplementation(async (publicKey) => mockAccount(publicKey));
+      const sleep = vi.fn(async (_ms: number) => {});
+      const gateway = new StellarTestnetGateway("https://horizon.example", "https://friendbot.example", {
+        horizonRetry: { random: () => 1 },
+        sleep,
+      });
+
+      const result = await gateway.execute(accountScenario);
+
+      expect(result.assertions[0]).toMatchObject({ type: "accountExists", status: "passed" });
+      expect(loadAccount).toHaveBeenCalledTimes(2);
+      expect(sleep).toHaveBeenCalledExactlyOnceWith(1_000);
+    });
+
+    it("retries transaction submission after 503 and returns success", async () => {
+      const loadAccount = vi.spyOn(Horizon.Server.prototype, "loadAccount")
+        .mockImplementation(async (publicKey) => mockAccount(publicKey));
+      vi.spyOn(Horizon.Server.prototype, "fetchTimebounds").mockImplementation(async () => ({
+        minTime: Math.floor(Date.now() / 1_000),
+        maxTime: Math.floor(Date.now() / 1_000) + 60,
+      }));
+      const submitTransaction = vi.spyOn(Horizon.Server.prototype, "submitTransaction")
+        .mockRejectedValueOnce(horizonResponseError(503))
+        .mockResolvedValueOnce({ hash: "transaction-hash", ledger: 123 } as Horizon.HorizonApi.SubmitTransactionResponse);
+      const sleep = vi.fn(async (_ms: number) => {});
+      const gateway = new StellarTestnetGateway("https://horizon.example", "https://friendbot.example", {
+        horizonRetry: { random: () => 1 },
+        sleep,
+      });
+      const scenario: ValidatedScenario = {
+        ...accountScenario,
+        id: "horizon-submit-retry",
+        accounts: [
+          { id: "alice", generate: true, fund: false },
+          { id: "bob", generate: true, fund: false },
+        ],
+        steps: [{ id: "payment", type: "payment", from: "alice", to: "bob", asset: "xlm", amount: "1" }],
+        assertions: [],
+      };
+
+      const result = await gateway.execute(scenario);
+
+      expect(result.steps[0]).toMatchObject({ id: "payment", status: "passed", transactionHash: "transaction-hash" });
+      expect(loadAccount).toHaveBeenCalledTimes(1);
+      expect(submitTransaction).toHaveBeenCalledTimes(2);
+      expect(sleep).toHaveBeenCalledExactlyOnceWith(1_000);
+    });
+
+    it("does not retry 400 client errors", async () => {
+      const loadAccount = vi.spyOn(Horizon.Server.prototype, "loadAccount")
+        .mockRejectedValue(horizonResponseError(400));
+      const sleep = vi.fn(async (_ms: number) => {});
+      const gateway = new StellarTestnetGateway("https://horizon.example", "https://friendbot.example", {
+        horizonRetry: { random: () => 1 },
+        sleep,
+      });
+
+      await expect(gateway.execute(accountScenario)).rejects.toMatchObject({ name: "SafeRunError" });
+      expect(loadAccount).toHaveBeenCalledTimes(1);
+      expect(sleep).not.toHaveBeenCalled();
+    });
+
+    it("retries timeout errors and reports exhaustion after three retries", async () => {
+      const timeoutError = Object.assign(new Error("request timed out"), { code: "ETIMEDOUT" });
+      const loadAccount = vi.spyOn(Horizon.Server.prototype, "loadAccount").mockRejectedValue(timeoutError);
+      const sleep = vi.fn(async (_ms: number) => {});
+      const gateway = new StellarTestnetGateway("https://horizon.example", "https://friendbot.example", {
+        horizonRetry: { random: () => 1 },
+        sleep,
+      });
+
+      await expect(gateway.execute(accountScenario)).rejects.toMatchObject({
+        name: "SafeRunError",
+        message: "Horizon request failed after 3 retries.",
+      });
+      expect(loadAccount).toHaveBeenCalledTimes(4);
+      expect(sleep.mock.calls.map(([delay]) => delay)).toEqual([1_000, 2_000, 4_000]);
+    });
+  });
   afterEach(() => {
     vi.useRealTimers();
   });
@@ -472,5 +741,3 @@ describe("StellarTestnetGateway Friendbot bounded retry", () => {
     ]);
   });
 });
-
-
