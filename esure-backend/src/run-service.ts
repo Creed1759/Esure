@@ -19,7 +19,7 @@ export class RunService {
     private readonly options: { maxConcurrentRuns: number; runTimeoutMs: number; stepTimeoutMs: number },
   ) {}
 
-  start(scenario: ValidatedScenario): RunReport {
+  async start(scenario: ValidatedScenario): Promise<RunReport> {
     if (this.#activeRuns >= this.options.maxConcurrentRuns) throw new RunCapacityError();
     const run: RunReport = {
       id: randomUUID(),
@@ -34,35 +34,40 @@ export class RunService {
       assertions: [],
       summary: emptySummary(),
     };
-    this.store.create(run);
+    await this.store.create(run);
     this.#activeRuns += 1;
     setImmediate(() => void this.execute(run.id, scenario));
     return run;
   }
 
-  get(id: string): RunReport | undefined {
-    return this.store.get(id);
+  get(id: string): Promise<RunReport | undefined> {
+    return Promise.resolve(this.store.get(id));
   }
 
   async execute(id: string, scenario: ValidatedScenario): Promise<void> {
     const controller = new AbortController();
-    this.store.update(id, { status: "validating" });
+    let progressUpdates = Promise.resolve();
     try {
-      this.store.update(id, { status: "running" });
+      await this.store.update(id, { status: "validating" });
+      await this.store.update(id, { status: "running" });
       const execution = this.ledger.execute(scenario, {
         signal: controller.signal,
         stepTimeoutMs: this.options.stepTimeoutMs,
         onStep: (step) => {
-          const current = this.store.get(id);
-          if (!current || current.status === "passed" || current.status === "failed") return;
-          const steps = [...current.steps, step];
-          this.store.update(id, { steps, summary: summarize(steps, current.assertions) });
+          progressUpdates = progressUpdates.then(async () => {
+            const current = await this.store.get(id);
+            if (!current || current.status === "passed" || current.status === "failed") return;
+            const steps = [...current.steps, step];
+            await this.store.update(id, { steps, summary: summarize(steps, current.assertions) });
+          });
         },
         onAssertion: (assertion) => {
-          const current = this.store.get(id);
-          if (!current || current.status === "passed" || current.status === "failed") return;
-          const assertions = [...current.assertions, assertion];
-          this.store.update(id, { assertions, summary: summarize(current.steps, assertions) });
+          progressUpdates = progressUpdates.then(async () => {
+            const current = await this.store.get(id);
+            if (!current || current.status === "passed" || current.status === "failed") return;
+            const assertions = [...current.assertions, assertion];
+            await this.store.update(id, { assertions, summary: summarize(current.steps, assertions) });
+          });
         },
       });
       execution.catch(() => {});
@@ -72,9 +77,10 @@ export class RunService {
         () => new RunTimeoutError(this.options.runTimeoutMs),
         () => controller.abort(),
       );
+      await progressUpdates;
       const summary = summarize(result.steps, result.assertions);
       const passed = summary.stepsFailed === 0 && summary.assertionsFailed === 0;
-      this.store.update(id, {
+      await this.store.update(id, {
         status: passed ? "passed" : "failed",
         completedAt: new Date().toISOString(),
         steps: result.steps,
@@ -90,10 +96,11 @@ export class RunService {
         }),
       });
     } catch (error) {
-      const current = this.store.get(id);
+      await progressUpdates;
+      const current = await this.store.get(id);
       const steps = current?.steps ?? [];
       const assertions = current?.assertions ?? [];
-      this.store.update(id, {
+      await this.store.update(id, {
         status: "failed",
         completedAt: new Date().toISOString(),
         steps,

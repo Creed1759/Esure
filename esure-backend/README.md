@@ -58,14 +58,17 @@ curl -X POST http://localhost:3001/api/v1/runs \
   -d '{"scenarioId":"issued-asset-payment","inputs":{}}'
 ```
 
-Run state is currently stored in memory and is lost when the process restarts.
-Generated Testnet secret keys are held only during execution and are never
-included in responses or reports.
+Run state is stored in memory by default and is lost when the process restarts.
+To persist sanitized run reports in PostgreSQL, set
+`PERSISTENCE_MODE=published`, configure `DATABASE_URL`, run the migrations, and
+set `RUN_PERSISTENCE_ENABLED=true`. Run persistence defaults to disabled, and
+the API report format remains unchanged. Generated Testnet secret keys and
+account keys are never included in persisted reports.
 
 P2.0-P2.2 optionally persist only the published scenario catalogue. The default
 `PERSISTENCE_MODE=disabled` preserves the P1 path. Published mode is fail-closed
 and requires separately applied checksummed migrations and reconciled fixtures;
-see `../esure-docs/PERSISTENCE.md`. It does not persist or execute runs yet.
+see `../esure-docs/PERSISTENCE.md`.
 
 Bundled scenarios are declarative files in `scenarios/`. Set
 `SCENARIO_DIRECTORY` to load additional bounded JSON/YAML definitions at startup,

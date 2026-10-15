@@ -44,6 +44,9 @@ export const scenarioSchemaV1 = {
       items: { oneOf: [
         { type: "object", additionalProperties: false, required: ["id", "type", "account", "asset"], properties: { id, type: { const: "changeTrust" }, account: id, asset: id, limit: positiveAmount } },
         { type: "object", additionalProperties: false, required: ["id", "type", "from", "to", "asset", "amount"], properties: { id, type: { const: "payment" }, from: id, to: id, asset: id, amount: positiveAmount } },
+        { type: "object", additionalProperties: false, required: ["id", "type", "account", "sellingAsset", "buyingAsset", "amount", "price"], properties: { id, type: { const: "manageSellOffer" }, account: id, sellingAsset: id, buyingAsset: id, amount: positiveAmount, price: positiveAmount } },
+        { type: "object", additionalProperties: false, required: ["id", "type", "from", "to", "sendAsset", "sendMax", "destAsset", "destAmount", "path"], properties: { id, type: { const: "pathPaymentStrictReceive" }, from: id, to: id, sendAsset: id, sendMax: positiveAmount, destAsset: id, destAmount: positiveAmount, path: { type: "array", maxItems: 5, items: id } } },
+        { type: "object", additionalProperties: false, required: ["id", "type", "from", "to", "sendAsset", "sendAmount", "destAsset", "destMin", "path"], properties: { id, type: { const: "pathPaymentStrictSend" }, from: id, to: id, sendAsset: id, sendAmount: positiveAmount, destAsset: id, destMin: positiveAmount, path: { type: "array", maxItems: 5, items: id } } },
       ] },
     },
     assertions: {
@@ -105,6 +108,9 @@ function validateAmounts(scenario: ScenarioDefinition): void {
   for (const step of scenario.steps) {
     if ("amount" in step) values.push([`step ${step.id} amount`, step.amount]);
     if ("limit" in step && step.limit) values.push([`step ${step.id} limit`, step.limit]);
+    if (step.type === "manageSellOffer") values.push([`step ${step.id} price`, step.price]);
+    if (step.type === "pathPaymentStrictReceive") values.push([`step ${step.id} sendMax`, step.sendMax], [`step ${step.id} destAmount`, step.destAmount]);
+    if (step.type === "pathPaymentStrictSend") values.push([`step ${step.id} sendAmount`, step.sendAmount], [`step ${step.id} destMin`, step.destMin]);
   }
   for (const assertion of scenario.assertions) if ("amount" in assertion) values.push([`assertion ${assertion.type} amount`, assertion.amount]);
   for (const [label, value] of values) {
@@ -130,13 +136,30 @@ function validateReferences(scenario: ScenarioDefinition): void {
   for (const step of scenario.steps) {
     if (step.type === "changeTrust") {
       if (!accounts.has(step.account)) issues.push(`step ${step.id} references unknown account ${step.account}`);
-      const asset = scenario.assets.find((candidate) => candidate.id === step.asset);
-      if (!asset) issues.push(`step ${step.id} references unknown asset ${step.asset}`);
-      else if (asset.type === "native") issues.push(`step ${step.id} cannot create a trustline for native XLM`);
-    } else {
+      if (!assets.has(step.asset)) issues.push(`step ${step.id} references unknown asset ${step.asset}`);
+      else if (scenario.assets.find((candidate) => candidate.id === step.asset)?.type === "native") issues.push(`step ${step.id} cannot create a trustline for native XLM`);
+    } else if (step.type === "payment") {
       if (!accounts.has(step.from)) issues.push(`step ${step.id} references unknown source account ${step.from}`);
       if (!accounts.has(step.to)) issues.push(`step ${step.id} references unknown destination account ${step.to}`);
       if (!assets.has(step.asset)) issues.push(`step ${step.id} references unknown asset ${step.asset}`);
+    } else if (step.type === "manageSellOffer") {
+      if (!accounts.has(step.account)) issues.push(`step ${step.id} references unknown account ${step.account}`);
+      if (!assets.has(step.sellingAsset)) issues.push(`step ${step.id} references unknown selling asset ${step.sellingAsset}`);
+      if (!assets.has(step.buyingAsset)) issues.push(`step ${step.id} references unknown buying asset ${step.buyingAsset}`);
+      if (step.sellingAsset === step.buyingAsset) issues.push(`step ${step.id} must sell and buy different assets`);
+    } else {
+      if (!accounts.has(step.from)) issues.push(`step ${step.id} references unknown source account ${step.from}`);
+      if (!accounts.has(step.to)) issues.push(`step ${step.id} references unknown destination account ${step.to}`);
+      const sendAsset = scenario.assets.find((asset) => asset.id === step.sendAsset);
+      const destAsset = scenario.assets.find((asset) => asset.id === step.destAsset);
+      if (!sendAsset) issues.push(`step ${step.id} references unknown send asset ${step.sendAsset}`);
+      if (!destAsset) issues.push(`step ${step.id} references unknown destination asset ${step.destAsset}`);
+      if (step.sendAsset === step.destAsset) issues.push(`step ${step.id} must send and receive different assets`);
+      if (new Set(step.path).size !== step.path.length) issues.push(`step ${step.id} path contains duplicate assets`);
+      for (const assetId of step.path) {
+        if (!assets.has(assetId)) issues.push(`step ${step.id} references unknown path asset ${assetId}`);
+        if (assetId === step.sendAsset || assetId === step.destAsset) issues.push(`step ${step.id} path must contain only intermediate assets`);
+      }
     }
   }
   for (const assertion of scenario.assertions) validateAssertionReferences(assertion, accounts, assets, steps, scenario, issues);

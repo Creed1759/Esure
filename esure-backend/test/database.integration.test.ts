@@ -40,7 +40,7 @@ const postgresAvailable = process.platform !== "win32" || existsSync("C:/Windows
     await runMigrations(database, undefined, "esure_migrations");
     await runMigrations(database, undefined, "esure_migrations");
     const result = await database.query<{ count: string }>("SELECT count(*)::text AS count FROM schema_migrations");
-    expect(result.rows[0]?.count).toBe("2");
+    expect(result.rows[0]?.count).toBe("3");
   });
 
   it("detects a modified migration checksum", async () => {
@@ -160,6 +160,7 @@ function databaseConfig(databaseUrl: string): AppConfig {
     runTimeoutMs: 5_000, stepTimeoutMs: 1_000, maxConcurrentRuns: 2, maxStoredRuns: 100, runRetentionMs: 60_000,
     rateLimitMax: 100, runRateLimitMax: 50, rateLimitWindowMs: 60_000, bodyLimitBytes: 16_384,
     persistenceMode: "published", databaseUrl, databasePoolMax: 5, databaseConnectionTimeoutMs: 5_000, databaseQueryTimeoutMs: 5_000, databaseIdleTimeoutMs: 10_000,
+    runPersistenceEnabled: false,
   };
 }
 
