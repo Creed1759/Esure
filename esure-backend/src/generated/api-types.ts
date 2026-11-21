@@ -9,6 +9,8 @@ export interface ApiOperations {
   getScenario: { params: { scenarioId: string }; response: ValidatedScenario };
   /** Issue #70 — returns the canonical v1 scenario JSON Schema. */
   getScenarioSchemaV1: { response: Record<string, unknown> };
+  /** Issue #231 — returns the canonical v1 run-report JSON Schema. */
+  getRunReportSchemaV1: { response: Record<string, unknown> };
   validateScenario: { body: ScenarioDefinition | string; response: { valid: true; scenarioId: string; scenarioVersion: number; schemaVersion: 1; contentHash: string } };
   listScenarioVersions: { params: { scenarioId: string }; query: { limit?: number; cursor?: number }; response: { items: ScenarioVersionSummary[]; nextCursor?: number } };
   getScenarioVersion: { params: { scenarioId: string; version: number }; response: ValidatedScenario };

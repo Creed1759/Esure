@@ -1,7 +1,7 @@
 import { stringify as stringifyYaml } from "yaml";
 import type { ScenarioDefinition, ScenarioSummary, ValidatedScenario } from "./domain.js";
 import type { Database, Queryable } from "./database.js";
-import { canonicalJson, contentHash, prepareScenario, type ScenarioRegistry } from "./scenario-loader.js";
+import { canonicalJson, contentHash, deriveCategories, prepareScenario, type ScenarioRegistry } from "./scenario-loader.js";
 import { validateScenarioDefinition } from "./scenario-schema.js";
 
 export interface ScenarioVersionSummary {
@@ -105,7 +105,7 @@ export class PublishedScenarioRepository {
       ) sv ON true
       WHERE s.visibility = 'published' AND s.status = 'active'
       ORDER BY s.public_slug`);
-    return result.rows.map((row) => ({ id: row.public_slug, version: row.version_number, name: row.definition.name, description: row.definition.description, contentHash: row.content_hash }));
+    return result.rows.map((row) => ({ id: row.public_slug, version: row.version_number, name: row.definition.name, description: row.definition.description, contentHash: row.content_hash, categories: deriveCategories(row.definition) }));
   }
 
   async latest(slug: string): Promise<ValidatedScenario | undefined> {

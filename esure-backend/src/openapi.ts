@@ -1,4 +1,5 @@
 import { scenarioSchemaV1 } from "./scenario-schema.js";
+import { runReportSchemaV1 } from "./report-schema.js";
 
 const runRequestSchema = {
   type: "object",
@@ -72,6 +73,26 @@ export function openApiDocument() {
           responses: {
             "200": {
               description: "Canonical v1 scenario schema",
+              content: { "application/json": { schema: { type: "object" } } },
+            },
+          },
+        },
+      },
+      "/api/v1/schemas/run-report-v1.json": {
+        get: {
+          operationId: "getRunReportSchemaV1",
+          summary: "Canonical run-report JSON Schema (v1)",
+          description: [
+            "Returns the machine-readable JSON Schema for exported run reports at schema version 1.",
+            "This schema is the authoritative contract used by validateRunReport() — there is no secondary copy.",
+            "Consumers may use this schema to validate downloaded reports offline.",
+            "Note: the schema enforces structural and enum constraints; additional ISO date-time checks",
+            "for createdAt, completedAt, expiresAt, and step timing fields are applied server-side",
+            "and are documented in the schema's property descriptions.",
+          ].join(" "),
+          responses: {
+            "200": {
+              description: "Canonical v1 run-report schema",
               content: { "application/json": { schema: { type: "object" } } },
             },
           },
@@ -167,7 +188,7 @@ export function openApiDocument() {
         },
       },
     },
-    components: { schemas: { ScenarioV1: scenarioSchemaV1, CataloguedRunRequest: runRequestSchema } },
+    components: { schemas: { ScenarioV1: scenarioSchemaV1, RunReportV1: runReportSchemaV1, CataloguedRunRequest: runRequestSchema } },
   } as const;
 }
 

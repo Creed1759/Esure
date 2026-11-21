@@ -1,12 +1,29 @@
 export type RunStatus = "requested" | "validating" | "running" | "passed" | "failed";
 export type StepStatus = "passed" | "failed";
 
+/**
+ * Bounded set of operation categories derivable from a scenario's steps and
+ * assertions without executing it. This lets dashboard clients filter by
+ * category without re-parsing step/assertion lists or inferring meaning from
+ * free-text names and descriptions.
+ *
+ * Values:
+ *   - "payment"           – at least one payment step is present
+ *   - "trust"             – at least one changeTrust step is present
+ *   - "offer"             – at least one manageSellOffer step is present
+ *   - "path-payment"      – at least one pathPaymentStrictReceive or pathPaymentStrictSend step
+ *   - "failure-assertion" – at least one stepFailedWith assertion is present
+ */
+export type ScenarioCategory = "payment" | "trust" | "offer" | "path-payment" | "failure-assertion";
+
 export interface ScenarioSummary {
   id: string;
   version: number;
   name: string;
   description: string;
   contentHash: string;
+  /** Bounded categories derived from the scenario's validated operations and assertions (issue #230). */
+  categories: ScenarioCategory[];
 }
 
 export interface ScenarioAccount {

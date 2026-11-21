@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { extname, resolve } from "node:path";
 import { parse as parseYaml } from "yaml";
-import type { ScenarioDefinition, ScenarioSummary, ValidatedScenario } from "./domain.js";
+import type { ScenarioCategory, ScenarioDefinition, ScenarioSummary, ValidatedScenario } from "./domain.js";
 import { SCENARIO_LIMITS, ScenarioValidationError, validateScenarioDefinition } from "./scenario-schema.js";
 
 const extensions = new Set([".json", ".yaml", ".yml"]);
@@ -23,9 +23,23 @@ export function parseScenario(source: string, format: "json" | "yaml"): Validate
 }
 
 export function prepareScenario(value: unknown): ValidatedScenario {
+  // #228: undefined, functions, and symbols stringify to undefined (not a
+  // string), which would cause Buffer.byteLength to throw before the catch
+  // below. Cyclic objects throw inside JSON.stringify. All of these must
+  // produce a ScenarioValidationError rather than an unhandled crash.
+  if (value === undefined || typeof value === "function" || typeof value === "symbol") {
+    throw new ScenarioValidationError(["definition must be JSON-serializable"]);
+  }
   let serialized: string;
-  try { serialized = JSON.stringify(value); }
-  catch { throw new ScenarioValidationError(["definition must be JSON-serializable"]); }
+  try {
+    const result = JSON.stringify(value);
+    // JSON.stringify returns undefined for the types above, but the guard
+    // above already covers them. This handles any other non-string result.
+    if (typeof result !== "string") throw new Error("non-string result");
+    serialized = result;
+  } catch {
+    throw new ScenarioValidationError(["definition must be JSON-serializable"]);
+  }
   if (Buffer.byteLength(serialized, "utf8") > SCENARIO_LIMITS.definitionBytes) {
     throw new ScenarioValidationError([`definition exceeds ${SCENARIO_LIMITS.definitionBytes} bytes`]);
   }
@@ -61,6 +75,32 @@ export function canonicalJson(value: unknown): string {
   return JSON.stringify(value);
 }
 
+/**
+ * Derive a bounded set of categories from a validated scenario's steps and
+ * assertions. The categories describe what operations the scenario exercises
+ * without requiring callers to inspect individual step or assertion types.
+ * Dashboard clients can use these for category-based filtering (issue #230).
+ *
+ * Catalogue ordering: filename (registry) and public_slug (database query)
+ * both use Unicode code-unit order, matching canonicalJson and contentHash
+ * ordering (issue #229).
+ */
+export function deriveCategories(definition: Pick<ScenarioDefinition, "steps" | "assertions">): ScenarioCategory[] {
+  const categories = new Set<ScenarioCategory>();
+  for (const step of definition.steps) {
+    if (step.type === "payment") categories.add("payment");
+    else if (step.type === "changeTrust") categories.add("trust");
+    else if (step.type === "manageSellOffer") categories.add("offer");
+    else if (step.type === "pathPaymentStrictReceive" || step.type === "pathPaymentStrictSend") categories.add("path-payment");
+  }
+  for (const assertion of definition.assertions) {
+    if (assertion.type === "stepFailedWith") categories.add("failure-assertion");
+  }
+  // Return in a fixed order so the array is stable across calls.
+  const order: ScenarioCategory[] = ["payment", "trust", "offer", "path-payment", "failure-assertion"];
+  return order.filter((c) => categories.has(c));
+}
+
 export class ScenarioRegistry {
   readonly #scenarios = new Map<string, ValidatedScenario>();
 
@@ -69,7 +109,9 @@ export class ScenarioRegistry {
   }
 
   list(): ScenarioSummary[] {
-    return [...this.#scenarios.values()].map(({ id, version, name, description, contentHash }) => ({ id, version, name, description, contentHash }));
+    return [...this.#scenarios.values()].map(({ id, version, name, description, contentHash, steps, assertions }) => ({
+      id, version, name, description, contentHash, categories: deriveCategories({ steps, assertions }),
+    }));
   }
 
   find(id: string): ValidatedScenario | undefined {
@@ -81,7 +123,7 @@ export class ScenarioRegistry {
     const absolute = resolve(directory);
     const files = readdirSync(absolute, { withFileTypes: true })
       .filter((entry) => entry.isFile() && extensions.has(extname(entry.name).toLowerCase()))
-      .sort((left, right) => left.name.localeCompare(right.name));
+      .sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0));
     if (files.length > 100) throw new ScenarioValidationError([`scenario directory ${absolute} exceeds 100 files`]);
     for (const file of files) {
       const extension = extname(file.name).toLowerCase();
