@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { LedgerGateway, RunError, RunReport, RunSummary, ValidatedScenario } from "./domain.js";
 import type { RunStore } from "./run-store.js";
-import { RunCapacityError, RunTimeoutError, SafeRunError, ShutdownError, withTimeout } from "./errors.js";
+import { RunCapacityError, RunDrainingError, RunTimeoutError, SafeRunError, ShutdownError, withTimeout } from "./errors.js";
 
 const emptySummary = (): RunSummary => ({
   stepsPassed: 0,
@@ -93,7 +93,7 @@ export class RunService {
   async start(scenario: ValidatedScenario, requestId?: string): Promise<RunReport> {
     if (this.#draining) {
       this.#drainingRejectedStarts += 1;
-      throw new RunCapacityError("The server is shutting down. No new runs are accepted.");
+      throw new RunDrainingError();
     }
     if (this.#activeRuns >= this.options.maxConcurrentRuns) {
       this.#capacityRejectedStarts += 1;
