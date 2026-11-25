@@ -40,6 +40,20 @@ export class RunCapacityError extends SafeRunError {
   }
 }
 
+/**
+ * Thrown when a run-start is rejected because the service is draining
+ * (graceful shutdown in progress).  Distinct from RunCapacityError so that
+ * callers can tell a temporary capacity limit from a permanent drain — the
+ * latter warrants a longer Retry-After and a different error code.
+ * Issue #223.
+ */
+export class RunDrainingError extends SafeRunError {
+  constructor() {
+    super({ code: "SERVER_DRAINING", message: "The server is shutting down. No new runs are accepted.", category: "capacity", retryable: true });
+    this.name = "RunDrainingError";
+  }
+}
+
 export class StepTimeoutError extends SafeRunError {
   constructor(stepId: string, timeoutMs: number) {
     super({
